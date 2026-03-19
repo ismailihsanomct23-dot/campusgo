@@ -992,6 +992,35 @@ const DEPTS = { CSE:'Computer Science', ECE:'Electronics', EEE:'Electrical', MEC
 /* ── STATE ── */
 let currentUser = null;
 let tickets = [], selectedSeat = null, selectedPayMethod = 'upi', pendingPayTicket = null, pendingCancelId = null;
+const API_BASE = './backend/api';
+
+function apiUrl(path) {
+  return `${API_BASE}/${path}`;
+}
+
+async function apiRequest(path, options = {}) {
+  const response = await fetch(apiUrl(path), {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    },
+    ...options
+  });
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    payload = null;
+  }
+
+  if (!response.ok || (payload && payload.ok === false)) {
+    const message = payload?.message || `Request failed (${response.status})`;
+    throw new Error(message);
+  }
+
+  return payload || { ok: true };
+}
 
 /* ══════════════════════════════════════
    INIT
@@ -1111,12 +1140,48 @@ function handleLogout() {
 
 function loadUserData() {
   tickets = JSON.parse(localStorage.getItem('cb_tickets_' + currentUser.email) || '[]');
+  if (currentUser?.email) {
+    syncTicketsFromApi();
+  }
+}
+
+async function syncTicketsFromApi() {
+  try {
+    const data = await apiRequest(`tickets.php?email=${encodeURIComponent(currentUser.email)}`, { method: 'GET' });
+    if (Array.isArray(data.tickets)) {
+      const localTickets = Array.isArray(tickets) ? tickets : [];
+      const apiTickets = data.tickets;
+      const byId = new Map();
+
+      apiTickets.forEach(t => byId.set(t.id, t));
+      localTickets.forEach(t => {
+        if (!byId.has(t.id)) byId.set(t.id, t);
+      });
+
+      tickets = Array.from(byId.values());
+      localStorage.setItem('cb_tickets_' + currentUser.email, JSON.stringify(tickets));
+      if (document.getElementById('appContainer') && !document.getElementById('appContainer').classList.contains('hidden')) {
+        renderMyTickets();
+        renderProfile();
+      }
+    }
+  } catch (_) {
+    // Keep local fallback silently when backend is unavailable
+  }
 }
 
 function showLogin() { show('loginPage'); hide('registerPage'); hide('appContainer'); }
 function showApp() { hide('loginPage'); hide('registerPage'); show('appContainer'); initApp(); }
-function show(id) { document.getElementById(id).classList.remove('hidden'); }
-function hide(id) { document.getElementById(id).classList.add('hidden'); }
+function show(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('hidden');
+}
+function hide(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.add('hidden');
+}
 function authErr(id, msg) { const e = document.getElementById(id); e.textContent = msg; e.classList.add('show'); }
 function clearAuth() { document.querySelectorAll('.auth-error,.auth-success').forEach(e => { e.classList.remove('show'); e.textContent = ''; }); }
 
@@ -1224,6 +1289,13 @@ function calcFare(routeId, fromIdx, toIdx) {
   return Math.round(fare);
 }
 
+function discountLabel() {
+  if (!currentUser) return '';
+  if (currentUser.role === 'student') return '(50% student discount)';
+  if (currentUser.role === 'faculty') return '(30% faculty discount)';
+  return '';
+}
+
 /* ── SEAT MAP ── */
 function setupListeners() {
   document.getElementById('findSeatsBtn').addEventListener('click', showSeatMap);
@@ -1236,19 +1308,10 @@ function setupListeners() {
     m.classList.add('active'); selectedPayMethod = m.dataset.method; renderPayDetails();
   }));
   
-  // PAYMENT BUTTON - Multiple attachment methods for reliability
+  // PAYMENT BUTTON
   const confirmBtn = document.getElementById('confirmPayBtn');
-  console.log('confirmPayBtn element:', confirmBtn); // DEBUG
   if (confirmBtn) {
-    // Method 1: Direct addEventListener
     confirmBtn.addEventListener('click', confirmPayment);
-    console.log('confirmPayBtn event listener attached (method 1)'); // DEBUG
-    
-    // Method 2: Also attach via onclick for backup
-    confirmBtn.onclick = confirmPayment;
-    console.log('confirmPayBtn onclick attached (method 2 - backup)'); // DEBUG
-  } else {
-    console.warn('❌ confirmPayBtn NOT found in DOM'); // DEBUG
   }
   
   document.getElementById('closeCancelModal').addEventListener('click', () => document.getElementById('cancelModal').classList.remove('show'));
@@ -1304,8 +1367,9 @@ function showSeatMap() {
 }
 
 function getBookedSeats(rid, date, time) {
-  // For now, return empty array (in production, fetch from API)
-  return [];
+  return tickets
+    .filter(t => t.routeId === rid && t.date === date && t.time === time && t.status !== 'cancelled')
+    .map(t => t.seat);
 }
 
 /* ── TICKET CREATION ── */
@@ -1322,15 +1386,26 @@ function makeTicket(status) {
   };
 }
 
-function reserveTicket() {
-  const t = makeTicket('reserved');
-  
-  // Save to localStorage only (no backend)
-  tickets.push(t);
+async function reserveTicket() {
+  if (!selectedSeat) return alert('Please select a seat first.');
+
+  const localTicket = makeTicket('reserved');
+  tickets.push(localTicket);
   localStorage.setItem('cb_tickets_' + currentUser.email, JSON.stringify(tickets));
-  alert(`✅ Seat ${t.seat} reserved!\nTicket: ${t.id}\nPay before boarding.`);
+  alert(`✅ Seat ${localTicket.seat} reserved!\nTicket: ${localTicket.id}\nPay before boarding.`);
+
+  try {
+    const createdTicket = await createTicketOnServer(localTicket);
+    const idx = tickets.findIndex(t => t.id === localTicket.id);
+    if (idx !== -1) tickets[idx] = createdTicket;
+    localStorage.setItem('cb_tickets_' + currentUser.email, JSON.stringify(tickets));
+  } catch (_) {
+    // Keep local reservation silently when backend is unavailable/unauthorized
+  }
+
   document.getElementById('seatCard').style.display = 'none';
   selectedSeat = null;
+  renderMyTickets();
 }
 
 /* ── PAYMENT ── */
@@ -1364,60 +1439,62 @@ function renderPayDetails() {
   else if (selectedPayMethod === 'netbanking') box.innerHTML = `<div class="form-group mt-1"><label>Bank Name</label><input type="text" placeholder="Enter your bank name" /></div><div class="form-group"><label>Account Number</label><input type="text" placeholder="Enter account number" /></div><p style="font-size:.85rem;color:#666;margin-top:.5rem;">🔒 Your details are secure and not stored.</p>`;
 }
 
-function confirmPayment() {
+async function confirmPayment() {
   try {
-    console.log('=== confirmPayment() CALLED ==='); // DEBUG
-    console.log('pendingPayTicket:', pendingPayTicket); // DEBUG
-    console.log('selectedPayMethod:', selectedPayMethod); // DEBUG
-    console.log('currentUser:', currentUser); // DEBUG
-    
     if (!pendingPayTicket) {
-      console.error('❌ No pending payment'); // DEBUG
       alert('❌ No pending payment. Please try booking again.');
       return;
     }
-    
-    // Validate payment method has data
+
     const payMethod = selectedPayMethod;
     if (!payMethod) {
-      console.error('❌ No payment method selected'); // DEBUG
       alert('❌ Please select a payment method');
       return;
     }
-    
-    // Add the ticket to user's bookings
-    if (!tickets) tickets = [];
-    pendingPayTicket.paidVia = payMethod;
-    tickets.push(pendingPayTicket);
-    
-    console.log('Ticket added to array:', pendingPayTicket); // DEBUG
-    console.log('Total tickets now:', tickets.length); // DEBUG
-    
-    // Save to localStorage
-    const storageKey = 'cb_tickets_' + currentUser.email;
-    const jsonStr = JSON.stringify(tickets);
-    localStorage.setItem(storageKey, jsonStr);
-    
-    console.log('Saved to localStorage key:', storageKey); // DEBUG
-    console.log('Saved JSON length:', jsonStr.length); // DEBUG
-    
-    // Close modal and show success
+
+    let finalTicket = null;
+    let usedLocalFallback = false;
+
+    if (pendingPayTicket.existingId) {
+      const ticket = tickets.find(t => t.id === pendingPayTicket.existingId);
+      try {
+        await confirmReservedTicketOnServer(pendingPayTicket.existingId, payMethod);
+      } catch (_) {
+        usedLocalFallback = true;
+      }
+      if (ticket) {
+        ticket.status = 'confirmed';
+        ticket.paidVia = payMethod;
+        finalTicket = ticket;
+      } else {
+        finalTicket = { ...pendingPayTicket, status: 'confirmed', paidVia: payMethod };
+      }
+    } else {
+      pendingPayTicket.paidVia = payMethod;
+      try {
+        const createdTicket = await createTicketOnServer(pendingPayTicket);
+        tickets.push(createdTicket);
+        finalTicket = createdTicket;
+      } catch (_) {
+        usedLocalFallback = true;
+        finalTicket = { ...pendingPayTicket };
+        tickets.push(finalTicket);
+      }
+    }
+
+    localStorage.setItem('cb_tickets_' + currentUser.email, JSON.stringify(tickets));
     closePayment();
-    
-    const successMsg = `✅ PAYMENT SUCCESSFUL!\n\nTicket ID: ${pendingPayTicket.id}\nRoute: ${pendingPayTicket.busNo}\nSeat: ${pendingPayTicket.seat}\n\nYour ticket is confirmed!`;
-    console.log('Showing success message'); // DEBUG
+
+    const fallbackNote = usedLocalFallback ? '\n\n⚠️ Saved locally because backend was unavailable.' : '';
+    const successMsg = `✅ PAYMENT SUCCESSFUL!\n\nTicket ID: ${finalTicket?.id || '-'}\nRoute: ${finalTicket?.busNo || '-'}\nSeat: ${finalTicket?.seat || '-'}\n\nYour ticket is confirmed!${fallbackNote}`;
     alert(successMsg);
-    
-    // Clear UI and refresh
+
     document.getElementById('seatCard').style.display = 'none';
     selectedSeat = null;
-    
-    // Refresh tickets display
+
     renderMyTickets();
-    console.log('=== confirmPayment() COMPLETED SUCCESSFULLY ==='); // DEBUG
-    
+
   } catch (error) {
-    console.error('❌ ERROR in confirmPayment():', error); // DEBUG
     alert('❌ Payment processing error: ' + error.message);
   }
 }
@@ -1432,11 +1509,22 @@ function openCancelModal(id) {
   document.getElementById('cancelModal').classList.add('show');
 }
 
-function confirmCancel() {
+async function confirmCancel() {
   const t = tickets.find(x => x.id === pendingCancelId);
   if (!t) return;
-  
-  // Update status in localStorage only (no backend, no wallet refund)
+
+  try {
+    await apiRequest('tickets.php', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ticketId: t.id,
+        action: 'cancel'
+      })
+    });
+  } catch (_) {
+    // Fallback to local cancel only
+  }
+
   t.status = 'cancelled';
   localStorage.setItem('cb_tickets_' + currentUser.email, JSON.stringify(tickets));
   
@@ -1563,6 +1651,44 @@ function renderProfile() {
 
 /* ── HELPERS ── */
 function saveTickets() { /* Now handled by localStorage */ }
+
+async function createTicketOnServer(ticket) {
+  const payload = {
+    email: currentUser.email,
+    routeCode: ticket.routeId,
+    from: ticket.from,
+    to: ticket.to,
+    date: ticket.date,
+    time: ticket.time,
+    schedule: ticket.schedule,
+    seat: ticket.seat,
+    fare: ticket.fare,
+    status: ticket.status,
+    paidVia: ticket.paidVia || null
+  };
+
+  const result = await apiRequest('tickets.php', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  });
+
+  return result.ticket;
+}
+
+async function confirmReservedTicketOnServer(ticketId, paidVia) {
+  await apiRequest('tickets.php', {
+    method: 'PATCH',
+    body: JSON.stringify({
+      ticketId,
+      action: 'confirmReserved',
+      paidVia
+    })
+  });
+}
+
+function addWalletFunds() {
+  alert('Wallet feature is currently disabled in this version.');
+}
 
 window.viewTicket = viewTicket;
 window.payReserved = payReserved;
