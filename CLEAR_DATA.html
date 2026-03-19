@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CampusGo - Clear Data & Reset</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+            color: #fff;
+        }
+        .container {
+            background: rgba(255,255,255,0.1);
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+        }
+        h1 { color: #4CAF50; }
+        button {
+            background: #4CAF50;
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+        button:hover { background: #45a049; }
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 5px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚌 CampusGo - Reset & Clear Data</h1>
+        <p>If the app is not working properly, clear all data and start fresh.</p>
+        
+        <button onclick="clearAll()">🗑️ Clear All Data & Reset</button>
+        <button onclick="backToApp()">← Go Back to App</button>
+        
+        <div class="status" id="status"></div>
+    </div>
+
+    <script>
+        function clearAll() {
+            try {
+                // Clear all CampusGo data
+                const keys = Object.keys(localStorage);
+                keys.forEach(key => {
+                    if (key.startsWith('cb_')) {
+                        localStorage.removeItem(key);
+                    }
+                });
+                
+                document.getElementById('status').innerHTML = 
+                    '✅ <strong>All data cleared successfully!</strong><br>' +
+                    'The app will now show the login page.<br>' +
+                    'Click "Go Back to App" or refresh campusgo.html';
+                
+                document.getElementById('status').style.background = 'rgba(76, 175, 80, 0.3)';
+                document.getElementById('status').style.color = '#4CAF50';
+            } catch(e) {
+                document.getElementById('status').innerHTML = 
+                    '❌ Error: ' + e.message;
+                document.getElementById('status').style.background = 'rgba(244, 67, 54, 0.3)';
+                document.getElementById('status').style.color = '#f44336';
+            }
+        }
+        
+        function backToApp() {
+            window.location.href = 'campusgo.html';
+        }
+    </script>
+</body>
+</html>
