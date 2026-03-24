@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/../lib/Response.php';
 require_once __DIR__ . '/../lib/Database.php';
 
@@ -45,7 +46,7 @@ if ($action === 'login') {
   requireFields($body, ['idOrEmail', 'password']);
 
   $idOrEmail = strtolower(trim($body['idOrEmail']));
-  $stmt = $db->prepare('SELECT id, name, email, student_id, phone, role, dept, year_value, is_admin, password_hash, created_at FROM users WHERE LOWER(email)=:key OR LOWER(student_id)=:key LIMIT 1');
+  $stmt = $db->prepare('SELECT id, name, email, student_id, phone, role, dept, year_value, is_admin, password_hash, created_at FROM users WHERE LOWER(email)=:key OR LOWER(student_id)=:key OR (LOWER(name)=:key AND (role = "admin" OR is_admin = 1)) ORDER BY is_admin DESC, id ASC LIMIT 1');
   $stmt->execute([':key' => $idOrEmail]);
   $user = $stmt->fetch();
 
